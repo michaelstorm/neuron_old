@@ -378,6 +378,19 @@ class BrainfuckSource(object):
                 flat += child.flattened()
         return flat
 
+class Op(object):
+
+    def __init__(self):
+        self.work_size = 0
+
+    def get_work_size(self):
+        return self.work_size
+
+class Go(Op):
+
+    def __init__(self, dst):
+        self.dst = dst
+
 class BrainfuckVisitor(object):
 
     def visit(self, c):
@@ -385,6 +398,8 @@ class BrainfuckVisitor(object):
             result = self.visitGo(dst=c[1])
         elif c[0] == 'add':
             result = self.visitAdd(dst=c[1], count=c[2])
+        elif c[0] == 'cond':
+            result = self.visitCond(src=c[1], op=c[2])
         elif c[0] == 'move':
             result = self.visitMove(dst=c[1], src=c[2])
         elif c[0] == 'unmove':
@@ -399,6 +414,8 @@ class BrainfuckVisitor(object):
             result = self.visitIsZero(c[1], c[2], negated=True)
         elif c[0] == 'iseq':
             result = self.visitIsEq(c)
+        elif c[0] == 'and':
+            result = self.visitAnd(c[1], c[2], c[3])
         else:
             raise Exception('Unrecognized BIL opcode ' + c[0])
 
@@ -410,36 +427,69 @@ class BrainfuckVisitor(object):
         else:
             return ['>' * dst]
 
-    def visitIsZero(self, dst, src_list, negated=False):
+    def visitAnd(self, dst, src_list, work):
         if len(src_list) == 0:
-            return [] # because we need the first element for work
+            raise Exception('Opcode \'and\' must have at least one src cell')
 
-        code = [self.visit(('go', dst))]
-        code += [self.visit(('add', 0, len(src_list)))]
+        code = [self.visit(('add', work, len(src_list)))]
 
         for src in src_list:
-            code += [self.visit(('go', src - dst))]
-            code += ['[']
-            code += [self.visit(('add', dst - src, -1))]
-            code += [self.visit(('zero', 0))]
-            code += [']']
-            code += [self.visit(('go', dst - src))]
+            code += [self.visit(('cond', src, ('add', work - src, -1)))]
 
-        code += [self.visit(('move', src_list[0] - dst, 0))]
-        code += ['+']
-        code += [self.visit(('go', src_list[0] - dst))]
-        code += ['[']
-        code += [self.visit(('add', dst - src_list[0], -1))]
-        code += [self.visit(('zero', 0))]
-        code += [']']
-        code += [self.visit(('go', dst - src_list[0]))]
+        code += [self.visit(('iszero', dst, work))]
+        return code
 
-        code += [self.visit(('go', dst * -1))]
+    def visitOr(self, dst, src_list):
+        if len(src_list) == 0:
+            raise Exception('Opcode \'or\' must have at least one src cell')
+
+        code = []
+        for src in src_list:
+            code += [self.visit(('cond', src, ('add', dst - src, 1)))]
+        return code
+
+    def visitXor(self, dst, src_list, work):
+        if len(src_list) < 2:
+            raise Exception('Opcode \'xor\' must have at least two src cells')
+
+        code = []
+        for src in src_list:
+            code += [self.visit(('cond', src, ('add', dst - src, 1)))]
+
+        code += [self.visit(('copy', work[0], dst, work[1]))]
+        code += [self.visit(('iszero', work[0], work[1]))]
+        code += [self.visit((
+        return code
+
+    def visitIsZero(self, dst, src, negated=False):
+        code = []
+        if not negated:
+            code += [self.visit(('add', dst, 1))]
+
+        code += [self.visit(('cond', src, ('add', dst - src, 1 if negated else -1)))]
         return code
 
     def visitAdd(self, dst, count):
         return [self.visit(('go', dst))] + [('-' if count < 0 else '+') * abs(count)] + [self.visit(('go', dst * -1))]
 
+    def visitCond(self, src, op):
+        code = [self.visit(('go', src))]
+        code += ['[']
+        code += [self.visit(op)]
+        code += [self.visit(('zero', 0))]
+        code += [']']
+        code += [self.visit(('go', src * -1))]
+        return code
+
+    def branch(self, src, work, true_ops, false_ops):
+        code = [self.visit(('go', src))]
+        code += ['[']
+        code += [self.visit(op) for op in true_ops]
+        code += [self.visit(('add', work, 1))]
+        code += [self.visit(('zero', 0))]
+        code += [']']
+        #code += [self.visit(('cond', work, false_op))]
+    
     def generateMove(self, op, dst, src):
         code = [self.visit(('go', src))]
         code += ['[-']
@@ -478,7 +528,6 @@ class BrainfuckVisitor(object):
         code += ['+[']
         code += [self.visit(('copy', work_a - first, second - first, work_b))]
         code += [self.visit(('isnotzero', work_b, work_a - first))]
-        #code += [self.v
         code += [']']
         return code
 
@@ -524,7 +573,7 @@ buf = r'''
 #print('bil: ' + str(bil))
 
 bfVisitor = BrainfuckVisitor()
-bf = bfVisitor.visitBIL([('add', 1, 1), ('add', 2, 1), ('iszero', 3, [1, 2])])
+bf = bfVisitor.visitBIL([('add', 1, 1), ('add', 2, 1), ('and', 3, [1, 2], 4)])
 
 print('bf:')
 for pair in bf:
